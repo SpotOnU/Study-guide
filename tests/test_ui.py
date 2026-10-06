@@ -96,3 +96,55 @@ def test_remembers_last_folder(qapp, conn, study_root):
     assert len(list(image_items(second))) == 4
     assert not second.ocr_button.isEnabled()  # no OCR engine available
     second.close()
+
+
+class SlideOCR(OCREngine):
+    name = "fake"
+
+    def recognize(self, path):
+        return (
+            "Mitochondria\n• Site of cellular respiration\n• Produce ATP from glucose and oxygen\n"
+            f"Osmosis: movement of water across a membrane ({path.stem})"
+        )
+
+
+def test_flashcard_round_in_the_window(qapp, conn, study_root):
+    from studyguide import progress
+
+    before = snapshot(study_root)
+    window = MainWindow(conn, SlideOCR())
+    window.open_folder(study_root)
+    window.transcribe_pending()
+    wait_for_ocr(qapp, window)
+
+    window.show_view("flashcards")
+    page = window.flashcards_page
+    assert window.pages.currentWidget() is page
+    assert not window.refresh_button.isVisibleTo(window)  # library-only button hidden
+
+    page.start_round(None)
+    assert page.in_round()
+    length = page.round.length
+    page.reveal()
+    assert page.answer_box.isVisibleTo(page)
+    page.grade("again")  # missed: comes back at the end
+    assert page.round.length == length + 1
+    page.next_card()
+    page.reveal()
+    page.hide_current()  # hiding works mid-round
+    while page.in_round() and page.round.current is not None:
+        page.reveal()
+        page.grade("good")
+        page.next_card()
+    assert not page.in_round()
+    assert page.stack.currentIndex() == 2  # summary
+    assert progress.total_xp(conn) > 0
+    assert "first_round" in progress.earned_badges(conn)
+    assert window.xp_stat.text().startswith("⭐ Level")
+
+    page.show_home()
+    assert page.stack.currentIndex() == 0
+    window.show_view("library")
+    assert window.pages.currentIndex() == 1
+    window.close()
+    assert snapshot(study_root) == before

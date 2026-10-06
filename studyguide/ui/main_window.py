@@ -10,8 +10,8 @@ from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -29,8 +29,11 @@ from PySide6.QtWidgets import (
 )
 
 from .. import db, library, transcripts
+from .. import progress
 from ..ocr import OCREngine
 from . import theme
+from .flashcards_page import FlashcardsPage
+from .widgets import button, card
 
 IMAGE_ROLE = Qt.UserRole + 1
 
@@ -60,27 +63,6 @@ class OCRWorker(QObject):
                 self.failed.emit(image_id, str(exc))
             self.progress.emit(done, total)
         self.finished.emit()
-
-
-def card(title: Optional[str] = None) -> Tuple[QFrame, QVBoxLayout]:
-    """A white rounded panel, optionally with a bold title."""
-    frame = QFrame()
-    frame.setObjectName("Card")
-    layout = QVBoxLayout(frame)
-    layout.setContentsMargins(18, 16, 18, 18)
-    layout.setSpacing(10)
-    if title:
-        label = QLabel(title)
-        label.setObjectName("CardTitle")
-        layout.addWidget(label)
-    return frame, layout
-
-
-def button(text: str, style: str) -> QPushButton:
-    btn = QPushButton(text)
-    btn.setObjectName(style)
-    btn.setCursor(Qt.PointingHandCursor)
-    return btn
 
 
 class ImageView(QScrollArea):
@@ -130,6 +112,7 @@ class MainWindow(QMainWindow):
         self.ocr_engine = ocr_engine
         self.library_id: Optional[int] = None
         self.current_image_id: Optional[int] = None
+        self.view = "library"
         self._topic_colors: dict = {}
         self._ocr_thread: Optional[QThread] = None
         self._ocr_worker: Optional[OCRWorker] = None
@@ -142,6 +125,7 @@ class MainWindow(QMainWindow):
         if saved:
             self.library_id = int(saved)
             self.refresh_library()
+        self.refresh_header_stats()
         self._update_enabled()
 
     # ------------------------------------------------------------------ UI
@@ -163,7 +147,27 @@ class MainWindow(QMainWindow):
         titles.addWidget(title)
         titles.addWidget(self.tagline)
         header.addLayout(titles)
+        header.addSpacing(24)
+
+        self.nav_group = QButtonGroup(self)
+        self.nav_buttons = {}
+        for view, text in (("library", "📚  Library"), ("flashcards", "🃏  Flashcards")):
+            nav = button(text, "Nav")
+            nav.setCheckable(True)
+            nav.clicked.connect(lambda _=False, v=view: self.show_view(v))
+            self.nav_group.addButton(nav)
+            self.nav_buttons[view] = nav
+            header.addWidget(nav)
+        self.nav_buttons["library"].setChecked(True)
         header.addStretch(1)
+
+        self.streak_stat = QLabel()
+        self.streak_stat.setObjectName("HeaderStat")
+        self.xp_stat = QLabel()
+        self.xp_stat.setObjectName("HeaderStat")
+        header.addWidget(self.streak_stat)
+        header.addWidget(self.xp_stat)
+        header.addSpacing(8)
 
         self.choose_button = button("📁  Choose Folder", "Plain")
         self.choose_button.clicked.connect(self.choose_folder)
@@ -181,6 +185,10 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self._build_welcome())
         self.pages.addWidget(self._build_library_page())
+        self.flashcards_page = FlashcardsPage(self.conn, lambda: self.library_id)
+        self.flashcards_page.progress_changed.connect(self.refresh_header_stats)
+        self.flashcards_page.open_library.connect(lambda: self.show_view("library"))
+        self.pages.addWidget(self.flashcards_page)
         outer.addWidget(self.pages, 1)
         self.setCentralWidget(root)
 
@@ -296,9 +304,18 @@ class MainWindow(QMainWindow):
         has_library = self.library_id is not None
         has_image = self.current_image_id is not None
         busy = self._ocr_thread is not None
-        self.pages.setCurrentIndex(1 if has_library else 0)
-        self.refresh_button.setVisible(has_library)
-        self.ocr_button.setVisible(has_library)
+        in_library = has_library and self.view == "library"
+        if not has_library:
+            self.pages.setCurrentIndex(0)
+        else:
+            self.pages.setCurrentIndex(1 if self.view == "library" else 2)
+        for nav in self.nav_buttons.values():
+            nav.setVisible(has_library)
+        self.streak_stat.setVisible(has_library)
+        self.xp_stat.setVisible(has_library)
+        self.refresh_button.setVisible(in_library)
+        self.ocr_button.setVisible(in_library)
+        self.choose_button.setVisible(in_library or not has_library)
         self.refresh_button.setEnabled(not busy)
         self.ocr_button.setEnabled(self.ocr_engine is not None and not busy)
         self.choose_button.setEnabled(not busy)
@@ -307,6 +324,28 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(modified)
         self.revert_button.setEnabled(modified)
         self.reread_button.setEnabled(has_image and self.ocr_engine is not None and not busy)
+
+    # ---------------------------------------------------------- navigation
+    def show_view(self, view: str) -> None:
+        if view != "library":
+            self._autosave()
+        self.view = view
+        self.nav_buttons[view].setChecked(True)
+        self.statusBar().clearMessage()
+        if view == "flashcards" and not self.flashcards_page.in_round():
+            self.flashcards_page.show_home()
+        elif view == "library" and self.library_id is not None:
+            self._populate_tree()
+        self._update_enabled()
+        self.refresh_header_stats()
+
+    def refresh_header_stats(self) -> None:
+        streak, _ = progress.streaks(self.conn)
+        lvl = progress.level_for(progress.total_xp(self.conn))
+        self.streak_stat.setText(f"🔥 {streak}")
+        self.streak_stat.setToolTip(f"{streak}-day study streak")
+        self.xp_stat.setText(f"⭐ Level {lvl.level}")
+        self.xp_stat.setToolTip(f"{lvl.into_level}/{lvl.needed} XP to the next level")
 
     # ------------------------------------------------------------- library
     def choose_folder(self) -> None:
@@ -320,6 +359,7 @@ class MainWindow(QMainWindow):
         db.set_setting(self.conn, "current_library_id", str(self.library_id))
         self.current_image_id = None
         self.refresh_library()
+        self.show_view("library")
 
     def refresh_library(self) -> None:
         if self.library_id is None:

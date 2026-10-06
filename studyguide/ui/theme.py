@@ -123,10 +123,81 @@ QLabel#WelcomeText {{ font-size: 16px; color: {MUTED}; font-weight: 600; }}
 {_chunky("Primary", GREEN, GREEN_DARK)}
 {_chunky("Purple", PURPLE, PURPLE_DARK)}
 {_chunky("Sky", SKY, SKY_DARK)}
+{_chunky("Coral", CORAL, CORAL_DARK)}
 {_chunky("Plain", CARD, "#DDD3C2", INK)}
 QPushButton#Plain:hover {{ background: {CREAM}; }}
 {_chunky("Big", GREEN, GREEN_DARK)}
 QPushButton#Big {{ font-size: 18px; padding: 12px 28px 10px 28px; border-radius: 18px; }}
+
+/* Navigation */
+QPushButton#Nav {{
+    background: transparent; color: {MUTED}; border: 2px solid transparent;
+    border-radius: 14px; padding: 7px 16px; font-weight: 800; font-size: 15px;
+}}
+QPushButton#Nav:hover {{ background: {PURPLE_SOFT}; color: {PURPLE_DARK}; }}
+QPushButton#Nav:checked {{ background: {PURPLE_SOFT}; color: {PURPLE_DARK}; border-color: {PURPLE}; }}
+QLabel#HeaderStat {{
+    background: {CARD}; border: 2px solid {CARD_BORDER}; border-radius: 14px;
+    padding: 5px 12px; font-weight: 800; font-size: 14px;
+}}
+QPushButton#Link {{
+    background: transparent; border: none; color: {MUTED}; font-weight: 700;
+    padding: 2px 0; text-align: left;
+}}
+QPushButton#Link:hover {{ color: {CORAL_DARK}; }}
+
+/* Flashcards home */
+QFrame#Stat, QFrame#TopicTile, QFrame#MissedCard {{
+    background: {CARD}; border: 2px solid {CARD_BORDER}; border-radius: 20px;
+}}
+QFrame#TopicTile {{ border-bottom-width: 5px; }}
+QFrame#Hero {{
+    background: {PURPLE_SOFT}; border: 2px solid #DCD2FF; border-radius: 24px;
+}}
+QLabel#HeroTitle {{ font-size: 24px; font-weight: 900; color: {PURPLE_DARK}; }}
+QLabel#HeroText {{ font-size: 15px; font-weight: 600; color: {INK}; }}
+QLabel#SectionTitle {{ font-size: 19px; font-weight: 900; margin-top: 6px; }}
+QLabel#StatEmoji {{ font-size: 30px; padding-right: 6px; }}
+QLabel#StatTitle {{ font-size: 19px; font-weight: 900; }}
+QLabel#TopicStats {{ color: {MUTED}; font-weight: 600; }}
+QProgressBar#XpBar::chunk {{ background: {SUNNY}; }}
+QFrame#Badge {{
+    background: {SUNNY_SOFT}; border: 2px solid {SUNNY}; border-radius: 18px;
+}}
+QFrame#BadgeLocked {{
+    background: #F7F2EA; border: 2px dashed #E3D8C6; border-radius: 18px;
+}}
+QLabel#BadgeEmoji {{ font-size: 30px; }}
+QLabel#BadgeName {{ font-weight: 900; font-size: 14px; }}
+QLabel#BadgeHow {{ color: {MUTED}; font-size: 12px; font-weight: 600; }}
+QFrame#BadgeLocked QLabel#BadgeName {{ color: {MUTED}; }}
+
+/* Flashcard */
+QFrame#FlashCard {{
+    background: {CARD}; border: 2px solid {CARD_BORDER}; border-radius: 26px;
+}}
+QLabel#CardHeading {{ font-size: 15px; font-weight: 800; color: {MUTED}; }}
+QLabel#Front {{ font-size: 26px; font-weight: 800; }}
+QLabel#Answer {{ font-size: 28px; font-weight: 900; color: {PURPLE}; }}
+QLabel#Eyebrow {{ font-size: 12px; font-weight: 900; color: {MUTED}; }}
+QLabel#Context {{ font-size: 15px; font-style: italic; color: {INK}; }}
+QLabel#Thumb {{ border: 2px solid {CARD_BORDER}; border-radius: 10px; background: white; }}
+QFrame#Divider {{ background: {CARD_BORDER}; border: none; }}
+QLabel#NewPill {{
+    background: {SUNNY_SOFT}; color: #8A6300; border-radius: 10px; padding: 3px 10px;
+    font-weight: 800;
+}}
+QLabel#XpPill {{
+    background: {SUNNY_SOFT}; color: #8A6300; border-radius: 12px; padding: 4px 12px;
+    font-weight: 900;
+}}
+QLabel#GradePrompt {{ font-size: 16px; font-weight: 800; color: {MUTED}; }}
+QFrame#FeedbackGood {{ background: {GREEN_SOFT}; border: 2px solid {GREEN}; border-radius: 18px; }}
+QFrame#FeedbackTry {{ background: {PURPLE_SOFT}; border: 2px solid {PURPLE}; border-radius: 18px; }}
+QLabel#FeedbackTitle {{ font-size: 20px; font-weight: 900; }}
+QLabel#FeedbackSub {{ font-weight: 700; color: {INK}; }}
+QLabel#MissedFront {{ font-size: 16px; font-weight: 700; }}
+QLabel#MissedAnswer {{ font-size: 17px; font-weight: 900; color: {GREEN_DARK}; }}
 
 QProgressBar {{
     background: #F2ECE2; border: none; border-radius: 9px; height: 18px;

@@ -42,7 +42,7 @@ system-wide.
 You can also double-click **`Study Guide.command`** in Finder. The first
 time, macOS may ask you to confirm; if so, right-click the file → Open.
 
-## Using it (step 1 features)
+## Using it: Library (step 1)
 
 1. Click **Choose Study Folder…** and pick your main study folder. The app
    remembers it for next time.
@@ -66,6 +66,55 @@ time, macOS may ask you to confirm; if so, right-click the file → Open.
    - Re-reading never overwrites text you edited. **Re-read Text from Image**
      on one slide asks before replacing your edits.
 
+## Flashcards (step 2)
+
+Click **🃏 Flashcards** at the top.
+
+- **Your stats:** your 🔥 streak, ⭐ level and XP, and 🏅 badges are at the
+  top.
+- **Start a round:** a short round of about 10 cards, with cards due for
+  review first and then a few new ones. **Practice** on a topic tile studies
+  just that topic.
+- **Each card:** read the question, press **Show answer** (space), then pick
+  one of:
+  - **😅 Still learning** (1): the card comes back at the end of the round,
+    and again in about 10 minutes.
+  - **🙂 Got it** (2): see it again tomorrow, then in 3 days, with longer
+    gaps after that.
+  - **😎 Easy** (3): a bigger jump.
+- **Where the answer comes from:** every answer shows the slide line it came
+  from and a thumbnail of the slide.
+- **Points:**
+  - 10 XP for each right answer, and 2 XP for trying when you miss.
+  - A bonus at the end of the round, and a bigger one for a perfect round.
+  - You never lose points.
+- **Streak:** your streak counts days in a row with at least one card. It
+  survives until the end of the day after you last studied.
+- **Round summary:** XP, score, streak and new badges, plus a "Learn from
+  these" list showing what the slides say about the cards you missed.
+- **Hiding cards:** hide a card that isn't useful with **🙈 Hide this
+  card**. Nothing is deleted.
+
+### How cards are made (for now)
+
+Cards come from a basic **offline generator**. It never invents anything and
+only reuses wording from your transcripts:
+
+- `Term: meaning`, `Term - meaning` and `Term = meaning` lines become a
+  definition card and a reverse "which term is this?" card. The two never
+  appear in the same round.
+- Other lines with 4 or more words become fill-in-the-blank cards. The
+  generator hides one key word, preferring acronyms and technical-looking
+  words.
+- Very short lines (like a single word) don't become cards.
+
+Because it is rule-based, cards can be plain or occasionally odd. Hide those.
+Better question writing comes later, when we choose an AI option.
+
+When you edit a transcript, the matching cards update the next time you open
+Flashcards. Cards for lines you removed are retired but keep their review
+history. If a line comes back, its card returns with its history.
+
 PNGs placed directly in the main folder (not in a topic subfolder) are
 skipped. Hidden files and folders (names starting with `.`) are ignored.
 
@@ -85,6 +134,13 @@ touch your real study folder or app data. They cover:
 - checking that the study folder is byte-for-byte unchanged, including file
   dates, after every operation
 - a run of the real window using a fake text reader
+- flashcards:
+  - cards only use words from the slides
+  - edits and rescans keep review history
+  - the review schedule
+  - round rules: missed cards return, no giveaway pairs
+  - XP, levels, streaks and badges
+  - a full round played in the real window
 
 ## Project layout
 
@@ -95,6 +151,10 @@ studyguide/
   library.py      scanning the study folder (read-only)
   transcripts.py  editable transcripts; protects manual edits
   ocr.py          Apple Vision text recognition (local)
+  generators/     turns slide text into study material (swappable)
+  flashcards.py   cards, review schedule, picking rounds
+  rounds.py       one flashcard round: answers, points, summary
+  progress.py     XP, levels, streaks and badges
   ui/             the desktop window (PySide6)
     theme.py      colours, font and styling
   assets/fonts/   Nunito font (SIL Open Font License, see OFL.txt)
@@ -104,7 +164,7 @@ tests/            automated tests
 ## Roadmap
 
 1. ✅ Choose a folder, scan topics, view slides, edit transcripts
-2. Flashcards with spaced review, plus points and streaks
+2. ✅ Flashcards with spaced review, points, streaks, levels and badges
 3. Topic quizzes with explanations linked back to slides
 4. Topic summaries
 5. Practice exams: topic selection, question count, difficulty, optional

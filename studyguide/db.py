@@ -63,11 +63,86 @@ MIGRATIONS = [
         updated_at    TEXT NOT NULL
     );
     """,
+    # 2: flashcards, review schedule, points and badges
+    """
+    -- Cards are tied to the slide they came from. They are never deleted:
+    -- if the transcript changes so a card no longer applies, it is "retired"
+    -- (hidden) and keeps its review history.
+    CREATE TABLE cards (
+        id          INTEGER PRIMARY KEY,
+        image_id    INTEGER NOT NULL REFERENCES images(id),
+        kind        TEXT NOT NULL,
+        front       TEXT NOT NULL,
+        back        TEXT NOT NULL,
+        context     TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        generator   TEXT NOT NULL,
+        position    INTEGER NOT NULL DEFAULT 0,
+        retired     INTEGER NOT NULL DEFAULT 0,
+        hidden      INTEGER NOT NULL DEFAULT 0,
+        created_at  TEXT NOT NULL,
+        UNIQUE (image_id, fingerprint)
+    );
+
+    -- Review schedule for cards you have seen at least once.
+    CREATE TABLE card_state (
+        card_id       INTEGER PRIMARY KEY REFERENCES cards(id),
+        due_at        TEXT NOT NULL,
+        interval_days REAL NOT NULL,
+        ease          REAL NOT NULL,
+        reps          INTEGER NOT NULL,
+        lapses        INTEGER NOT NULL,
+        last_grade    TEXT NOT NULL,
+        last_reviewed TEXT NOT NULL
+    );
+
+    CREATE TABLE review_log (
+        id            INTEGER PRIMARY KEY,
+        card_id       INTEGER NOT NULL REFERENCES cards(id),
+        reviewed_at   TEXT NOT NULL,
+        grade         TEXT NOT NULL,
+        interval_days REAL NOT NULL
+    );
+    CREATE INDEX review_log_at ON review_log(reviewed_at);
+
+    CREATE TABLE rounds (
+        id          INTEGER PRIMARY KEY,
+        kind        TEXT NOT NULL,
+        topic_id    INTEGER REFERENCES topics(id),
+        started_at  TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        total       INTEGER NOT NULL,
+        correct     INTEGER NOT NULL,
+        xp          INTEGER NOT NULL
+    );
+
+    CREATE TABLE xp_log (
+        id       INTEGER PRIMARY KEY,
+        at       TEXT NOT NULL,
+        points   INTEGER NOT NULL,
+        reason   TEXT NOT NULL,
+        topic_id INTEGER REFERENCES topics(id)
+    );
+
+    CREATE TABLE badges (
+        badge_id  TEXT PRIMARY KEY,
+        earned_at TEXT NOT NULL
+    );
+    """,
 ]
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return iso(datetime.now(timezone.utc))
+
+
+def iso(moment: datetime) -> str:
+    """Store times as UTC ISO strings so they sort and compare as text."""
+    return moment.astimezone(timezone.utc).isoformat(timespec="seconds")
+
+
+def parse_iso(text: str) -> datetime:
+    return datetime.fromisoformat(text)
 
 
 def connect(path: Union[str, Path]) -> sqlite3.Connection:
