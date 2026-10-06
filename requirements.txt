@@ -1,0 +1,3 @@
+PySide6>=6.5
+# Apple Vision OCR (built into macOS; runs locally, free)
+pyobjc-framework-Vision>=9.0; sys_platform == "darwin"
