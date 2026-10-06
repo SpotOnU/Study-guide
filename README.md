@@ -95,43 +95,104 @@ Click **🃏 Flashcards** at the top.
 - **Hiding cards:** hide a card that isn't useful with **🙈 Hide this
   card**. Nothing is deleted.
 
-### How cards are made (for now)
+### How questions are made
 
-Cards come from a basic **offline generator**. It never invents anything and
-only reuses wording from your transcripts:
+Questions are made offline, on your Mac, in three steps:
 
-- `Term: meaning`, `Term - meaning` and `Term = meaning` lines become a
-  definition card and a reverse "which term is this?" card. The two never
-  appear in the same round.
-- Other lines with 4 or more words become fill-in-the-blank cards. The
-  generator hides one key word, preferring acronyms and technical-looking
-  words.
-- Very short lines (like a single word) don't become cards.
+1. **Find the concept.** For each slide (with footers removed), the generator
+   looks for:
+   - explicit definitions (`Term: meaning`, `Term - meaning`, `Term = meaning`,
+     `Term is a …`)
+   - acronyms with their expansion, like `EFS (Encrypting File System)`
+   - CompTIA A+ Core 2 concepts the slide mentions
+   - complete statements about a key term
+2. **Write questions about that concept.** These include multiple choice
+   ("Which term is defined as…?"), definitions, acronyms and, only for
+   complete, meaningful statements, fill-in-the-blank.
+3. **Check every question before saving it** (`generators/validate.py`). The
+   checker asks:
+   - Does the question make sense without seeing the slide?
+   - Does it test a concept, rather than a random word from an instruction or
+     fragment?
+   - Does the answer actually answer the question, without being given away?
+   - Does the explanation teach why the answer is right, and say why each
+     other option is wrong?
+   - Is it backed by a line on the slide, or clearly labelled as added
+     context?
 
-Because it is rule-based, cards can be plain or occasionally odd. Hide those.
-Better question writing comes later, when we choose an AI option.
+   If a question fails, the generator tries a different kind of question for
+   the same concept. If none pass, it skips that concept. A slide without
+   enough useful information gets no questions at all, rather than weak ones.
 
-When you edit a transcript, the matching cards update the next time you open
-Flashcards. Cards for lines you removed are retired but keep their review
-history. If a line comes back, its card returns with its history.
+**Added CompTIA A+ Core 2 context.** `knowledge/core2.py` is a hand-checked
+bank of about 45 Core 2 concepts: file systems, Windows tools, commands,
+malware, social engineering, backups, operational procedures and remote
+access. Each has a clear question, an explanation and reasons why the
+alternatives are wrong.
 
-### Removing repeated clutter (footers, links)
+A concept is used only when your slide mentions it. An everyday word like
+"application" must appear in the slide title or more than once. In the app
+these questions are always labelled **🎓 Added CompTIA A+ Core 2 context (not
+from your slide)**, and they show the slide line that mentions the concept.
+Slide-based questions show **From your slide** with the exact line.
 
-Slide footers like `https://ProfessorMesser.com © 2025 Messer Studios, LLC` are
-removed from transcripts automatically. That way they don't clutter your notes
-or turn into flashcards. By default the app drops:
+**Limits.** The offline generator can only ask about what it recognises:
+defined terms, acronyms, and concepts in the bank. It can't yet write
+scenario or troubleshooting questions about every bullet on a slide. That
+needs an AI option, which we haven't chosen yet, and its output would go
+through the same checks.
 
-- any line with a copyright notice (©, "Copyright", "All rights reserved")
-- any line that is only a web address
+**Preview on your own slides first.** This is read-only and saves nothing:
 
-Click **🧹 Ignore Text** in the Library to switch this off, or to add your own
-phrases. Any line containing one of your phrases is removed, for example a
-course name repeated on every slide. Saving cleans your existing transcripts
-straight away. Only whole matching lines are removed, and the raw text reading
-is kept in the database. Cards made from removed lines are retired.
+```bash
+.venv/bin/python -m studyguide.preview                       # every topic
+.venv/bin/python -m studyguide.preview --topic "File Systems" --rejected
+.venv/bin/python -m studyguide.preview > preview.txt         # save to a file
+```
 
-PNGs placed directly in the main folder (not in a topic subfolder) are
-skipped. Hidden files and folders (names starting with `.`) are ignored.
+**Older cards.** Cards made by the first version of the app, which blanked out
+a word from any line (for example "Find the _____ you need" → "application"),
+are checked when you open Flashcards. Cards that fail the new checks are
+**paused**, so they no longer appear in rounds. A yellow banner offers
+**Preview & regenerate**: it shows the paused cards, why each one failed, and
+the new questions from the same slides. Nothing changes until you click
+**Regenerate from my slides**. Old cards are then retired, not deleted, so
+their review history is kept.
+
+When you edit a transcript, its questions update the next time you open
+Flashcards. Questions for lines you removed are retired but keep their review
+history. If a line comes back, its question returns with its history.
+
+### Removing slide footers
+
+The Professor Messer footer, `https://ProfessorMesser.com © 2025 Messer
+Studios, LLC`, is removed from transcripts and can never become study
+material. Detection tolerates OCR mistakes, for example:
+
+- `@` or `e` read instead of `©`
+- a missing `//`, or a comma instead of a dot
+- `O` read for `0`, or `Studlos` for `Studios`
+- different capitalization or a different year
+- the footer split over two lines
+
+If the footer is glued onto the end of a real line, only the footer part is
+removed and the rest of the line stays. Real copyright notices such as
+`© 2024 …` or `All rights reserved` are removed too, but content that only
+mentions copyright, like "Copyright law protects software", is kept. Nothing is
+removed just because it sits near the bottom of a slide.
+
+- **New readings** are cleaned automatically. The raw text reading is kept in
+  the database.
+- **Existing transcripts** were cleaned once automatically when you first
+  opened this version.
+- **🧹 Ignore Text** in the Library lets you:
+  - preview exactly which lines would be removed
+  - add your own phrases (case, spacing and punctuation are ignored)
+  - switch the built-in rules off
+  - **undo the last cleanup**
+
+  Every cleanup backs up the previous transcript text first. Your PNG files
+  are never changed.
 
 ## Running the tests
 
@@ -149,8 +210,19 @@ touch your real study folder or app data. They cover:
 - checking that the study folder is byte-for-byte unchanged, including file
   dates, after every operation
 - a run of the real window using a fake text reader
+- footer removal: the exact Professor Messer footer and OCR-mangled
+  variations, footers split over lines or glued onto content, useful
+  "copyright" content kept, and cleanup backup and undo
+- question quality:
+  - "Find the _____ you need" → "application" is rejected
+  - accepted questions are self-contained and have a clear answer and an
+    explanation
+  - slide facts are kept apart from added context
+  - footer text never becomes study content
+  - every concept-bank entry passes validation
+- old cards: fragment cards are paused, previewed and regenerated, and
+  their history is kept
 - flashcards:
-  - cards only use words from the slides
   - edits and rescans keep review history
   - the review schedule
   - round rules: missed cards return, no giveaway pairs
@@ -165,9 +237,11 @@ studyguide/
   db.py           SQLite schema and migrations
   library.py      scanning the study folder (read-only)
   transcripts.py  editable transcripts; protects manual edits
-  cleanup.py      removes repeated footers/links from transcripts
+  cleanup.py      removes slide footers (OCR-tolerant), with backup/undo
+  knowledge/      hand-checked CompTIA A+ Core 2 concept bank (added context)
+  preview.py      read-only preview of generated questions
   ocr.py          Apple Vision text recognition (local)
-  generators/     turns slide text into study material (swappable)
+  generators/     concept -> question -> validation (offline.py, validate.py)
   flashcards.py   cards, review schedule, picking rounds
   rounds.py       one flashcard round: answers, points, summary
   progress.py     XP, levels, streaks and badges

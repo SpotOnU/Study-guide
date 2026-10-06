@@ -129,6 +129,25 @@ MIGRATIONS = [
         earned_at TEXT NOT NULL
     );
     """,
+    # 3: educational study items (explanations, options, sources), quality
+    #    checks for old cards, and backups of transcript cleanups
+    """
+    ALTER TABLE cards ADD COLUMN explanation TEXT NOT NULL DEFAULT '';
+    -- JSON: concept, options, why_wrong, source, added_context, mentions
+    ALTER TABLE cards ADD COLUMN details TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE cards ADD COLUMN gen_version INTEGER NOT NULL DEFAULT 1;
+    -- Why a card is kept out of rounds (e.g. failed quality checks); NULL = OK
+    ALTER TABLE cards ADD COLUMN paused TEXT;
+
+    CREATE TABLE transcript_history (
+        id       INTEGER PRIMARY KEY,
+        image_id INTEGER NOT NULL REFERENCES images(id),
+        text     TEXT NOT NULL,
+        saved_at TEXT NOT NULL,
+        reason   TEXT NOT NULL,
+        batch    TEXT NOT NULL
+    );
+    """,
 ]
 
 

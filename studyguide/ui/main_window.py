@@ -122,10 +122,13 @@ class MainWindow(QMainWindow):
         self.resize(1320, 840)
         self._build_ui()
 
-        # One-time tidy-up of transcripts saved before clutter removal existed
-        if db.get_setting(conn, "cleanup_v1_applied") is None:
-            cleanup.clean_all(conn, cleanup.load_rules(conn))
-            db.set_setting(conn, "cleanup_v1_applied", "1")
+        # One-time tidy-up of transcripts saved before the improved footer detection.
+        # Only footer/notice text is removed, and every changed transcript is backed
+        # up first (it can be undone from the "Ignore Text" window).
+        self._startup_cleaned = 0
+        if db.get_setting(conn, "cleanup_v2_applied") is None:
+            self._startup_cleaned = cleanup.clean_all(conn, cleanup.load_rules(conn), reason="cleanup-auto")
+            db.set_setting(conn, "cleanup_v2_applied", "1")
 
         saved = db.get_setting(conn, "current_library_id")
         if saved:
@@ -133,6 +136,10 @@ class MainWindow(QMainWindow):
             self.refresh_library()
         self.refresh_header_stats()
         self._update_enabled()
+        if self._startup_cleaned:
+            self.statusBar().showMessage(
+                f"🧹  Removed the slide footer from {self._startup_cleaned} transcript(s). "
+                "Undo it from “Ignore Text” if needed.")
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -380,10 +387,13 @@ class MainWindow(QMainWindow):
             self._populate_tree()
             if self.current_image_id is not None:
                 self._load_transcript()
-            self.statusBar().showMessage(
-                f"🧹  Tidied up {n} transcript{'s' if n != 1 else ''}." if n
-                else "🧹  Saved. New readings will skip those lines."
-            )
+            if n < 0:
+                self.statusBar().showMessage(f"↩️  Restored {-n} transcript(s) from before the last cleanup.")
+            else:
+                self.statusBar().showMessage(
+                    f"🧹  Tidied up {n} transcript{'s' if n != 1 else ''}." if n
+                    else "🧹  Saved. New readings will skip those lines."
+                )
 
     def refresh_library(self) -> None:
         if self.library_id is None:

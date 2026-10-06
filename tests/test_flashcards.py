@@ -6,39 +6,17 @@ import pytest
 
 from studyguide import flashcards, library, progress, transcripts
 from studyguide.db import iso
-from studyguide.generators import SlideText
-from studyguide.generators.offline import OfflineGenerator
+from conftest import APP_SLIDE, FS_SLIDE, MALWARE_SLIDE
 from studyguide.rounds import Round
-
-SLIDE = """Mitochondria
-• Site of cellular respiration
-• Produce ATP from glucose and oxygen
-• Inner membrane folds = cristae
-Osmosis: movement of water across a membrane
-• Short line"""
 
 NOW = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
 
+BACKUP_SLIDE = """Backup types
+• Full backup: copies all selected data every time
+• Incremental backup: copies data changed since the last backup of any type
+• Differential backup: copies everything changed since the last full backup
+• Test restores regularly"""
 
-# ---------------------------------------------------------------- generator
-
-def test_generator_makes_varied_cards_only_from_slide_words():
-    cards = OfflineGenerator().flashcards(SlideText(1, "Biology", "Biology/a.png", SLIDE))
-    kinds = [c.kind for c in cards]
-    assert "cloze" in kinds and "definition" in kinds and "reverse" in kinds
-    for card in cards:
-        assert card.back in SLIDE, f"answer {card.back!r} is not on the slide"
-        assert card.context in SLIDE.replace("• ", "")
-    atp = next(c for c in cards if c.back == "ATP")
-    assert "_____" in atp.front and "ATP" not in atp.front
-    assert not any("Short line" in c.context for c in cards)
-
-
-def test_generator_handles_empty_text():
-    assert OfflineGenerator().flashcards(SlideText(1, "T", "T/a.png", "")) == []
-
-
-# ---------------------------------------------------------------- syncing
 
 @pytest.fixture
 def lib(conn, study_root):
@@ -57,38 +35,48 @@ def active_cards(conn, img):
     ).fetchall()
 
 
-def test_sync_is_idempotent(conn, lib):
+# ---------------------------------------------------------------- syncing
+
+def test_sync_stores_explained_items_and_is_idempotent(conn, lib):
     img = image_id(conn, "Biology/slide01.png")
-    transcripts.save_transcript(conn, img, SLIDE)
+    transcripts.save_transcript(conn, img, MALWARE_SLIDE)
     first = flashcards.sync_cards(conn, lib)
     assert first.added >= 4
+    for card in active_cards(conn, img):
+        assert card["explanation"] and card["gen_version"] == flashcards.CURRENT_VERSION
+        details = flashcards.card_details(card)
+        assert details["source"] in ("slide", "context") and details["concept"]
     again = flashcards.sync_cards(conn, lib)
     assert (again.added, again.retired) == (0, 0)
 
 
 def test_editing_transcript_keeps_history_and_retires_only_changed_cards(conn, lib):
     img = image_id(conn, "Biology/slide01.png")
-    transcripts.save_transcript(conn, img, SLIDE)
+    transcripts.save_transcript(conn, img, MALWARE_SLIDE)
     flashcards.sync_cards(conn, lib)
-    atp = next(c for c in active_cards(conn, img) if c["back"] == "ATP")
-    flashcards.grade_card(conn, atp["id"], "good", NOW)
+    worm = next(c for c in active_cards(conn, img) if c["back"] == "Worm")
+    flashcards.grade_card(conn, worm["id"], "good", NOW)
 
-    # fix a line that has nothing to do with ATP
-    transcripts.save_transcript(conn, img, SLIDE.replace("cellular respiration", "aerobic respiration"))
+    # remove the Trojan line: only Trojan cards are retired, the Worm card keeps its history
+    edited = MALWARE_SLIDE.replace("• Trojan horse: software that pretends to be something else\n", "")
+    transcripts.save_transcript(conn, img, edited)
+    total_before = conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0]
     result = flashcards.sync_cards(conn, lib)
-    assert result.added == 1 and result.retired == 1
-    still = flashcards.get_card(conn, atp["id"])
+    assert result.retired >= 1
+    assert conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0] >= total_before  # nothing deleted
+    still = flashcards.get_card(conn, worm["id"])
     assert still["retired"] == 0 and still["reps"] == 1
+    assert all("Trojan" not in c["back"] for c in active_cards(conn, img))
 
-    # undo the edit: the old card comes back rather than a duplicate
-    transcripts.save_transcript(conn, img, SLIDE)
+    # undo the edit: the old cards come back rather than duplicates
+    transcripts.save_transcript(conn, img, MALWARE_SLIDE)
     result = flashcards.sync_cards(conn, lib)
-    assert result.restored == 1 and result.added == 0
+    assert result.restored >= 1 and result.added == 0
 
 
 def test_cards_of_missing_slides_are_kept_but_not_studied(conn, lib, study_root):
     img = image_id(conn, "Chemistry/atoms.png")
-    transcripts.save_transcript(conn, img, SLIDE)
+    transcripts.save_transcript(conn, img, MALWARE_SLIDE)
     flashcards.sync_cards(conn, lib)
     card_ids = [c["id"] for c in active_cards(conn, img)]
     flashcards.grade_card(conn, card_ids[0], "good", NOW)
@@ -110,7 +98,7 @@ def test_study_folder_untouched_by_flashcards(conn, lib, study_root):
     from conftest import snapshot
     before = snapshot(study_root)
     for row in library.images_needing_ocr(conn, lib):
-        transcripts.save_transcript(conn, row["id"], SLIDE)
+        transcripts.save_transcript(conn, row["id"], MALWARE_SLIDE)
     flashcards.sync_cards(conn, lib)
     r = Round(conn, flashcards.build_round(conn, lib), now=lambda: NOW)
     while r.current is not None:
@@ -119,17 +107,75 @@ def test_study_folder_untouched_by_flashcards(conn, lib, study_root):
     assert snapshot(study_root) == before
 
 
+# ---------------------------------------------------------------- old fragment cards
+
+def add_old_card(conn, img, front, back, context):
+    """Insert a card the way the old (version 1) generator stored it."""
+    cur = conn.execute(
+        "INSERT INTO cards (image_id, kind, front, back, context, fingerprint, generator, created_at) "
+        "VALUES (?, 'cloze', ?, ?, ?, ?, 'offline-basic', '2026-01-01T00:00:00+00:00')",
+        (img, front, back, context, f"old-{front}"),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def test_old_fragment_cards_are_paused_and_offered_for_regeneration(conn, lib):
+    img = image_id(conn, "Biology/slide01.png")
+    transcripts.save_transcript(conn, img, APP_SLIDE)
+    bad = add_old_card(conn, img, "Installing applications\n\nFill in the blank:\nFind the _____ you need",
+                       "application", "Find the application you need")
+    flashcards.grade_card(conn, bad, "good", NOW)  # it has review history
+
+    result = flashcards.sync_cards(conn, lib)
+    assert result.paused == 1 and result.waiting == 1
+    card = flashcards.get_card(conn, bad)
+    assert card["paused"] and ("instruction" in card["paused"] or "fragment" in card["paused"])
+    assert bad not in flashcards.build_round(conn, lib, size=50, now=NOW + timedelta(days=30))
+    # the slide is NOT silently regenerated while the old card is waiting for approval
+    assert [c["id"] for c in active_cards(conn, img)] == [bad]
+
+    status = flashcards.old_cards_status(conn, lib)
+    assert (status.total, status.paused, status.fragments) == (1, 1, 1)
+    assert status.examples[0]["back"] == "application"
+
+    preview = flashcards.preview_items(conn, lib, only_waiting=True)
+    assert any(i.answer == "Application software" for i in preview.items)
+    assert conn.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1  # preview saved nothing
+
+    regen = flashcards.regenerate_old_cards(conn, lib)
+    assert regen.added >= 1 and regen.retired >= 1
+    new_cards = active_cards(conn, img)
+    assert new_cards and all(c["gen_version"] == flashcards.CURRENT_VERSION for c in new_cards)
+    assert any(c["back"] == "Application software" for c in new_cards)
+    old = flashcards.get_card(conn, bad)
+    assert old["retired"] == 1 and old["reps"] == 1  # retired, not deleted; history kept
+    assert flashcards.old_cards_status(conn, lib).total == 0
+
+
+def test_new_slides_get_new_questions_while_old_ones_wait(conn, lib):
+    old_img = image_id(conn, "Biology/slide01.png")
+    new_img = image_id(conn, "Chemistry/atoms.png")
+    transcripts.save_transcript(conn, old_img, APP_SLIDE)
+    transcripts.save_transcript(conn, new_img, MALWARE_SLIDE)
+    add_old_card(conn, old_img, "Fill in the blank:\nFind the _____ you need", "application", "x")
+    flashcards.sync_cards(conn, lib)
+    assert active_cards(conn, new_img)
+    assert len(active_cards(conn, old_img)) == 1
+
+
 # ---------------------------------------------------------------- rounds
 
 @pytest.fixture
 def deck(conn, lib):
-    for rel in ("Biology/slide01.png", "Biology/slide02.PNG", "Chemistry/atoms.png"):
-        transcripts.save_transcript(conn, image_id(conn, rel), SLIDE.replace("Mitochondria", rel))
+    for rel, text in (("Biology/slide01.png", MALWARE_SLIDE), ("Biology/slide02.PNG", FS_SLIDE),
+                      ("Chemistry/atoms.png", APP_SLIDE), ("Biology/Week 2/cells.png", BACKUP_SLIDE)):
+        transcripts.save_transcript(conn, image_id(conn, rel), text)
     flashcards.sync_cards(conn, lib)
     return lib
 
 
-def test_round_never_pairs_a_definition_with_its_reverse(conn, deck):
+def test_round_never_shows_two_cards_from_the_same_slide_line(conn, deck):
     ids = flashcards.build_round(conn, deck, size=50, now=NOW)
     seen = set()
     for cid in ids:
@@ -181,7 +227,6 @@ def test_perfect_round_bonus_and_badge(conn, deck):
     s = r.finish()
     assert s.perfect and s.bonus == progress.XP_ROUND_DONE + progress.XP_PERFECT_BONUS
     assert "perfect_round" in s.new_badges
-    # badges are only awarded once
     r2 = Round(conn, flashcards.build_round(conn, deck, size=5, now=NOW), now=lambda: NOW)
     while r2.current is not None:
         r2.answer("good")

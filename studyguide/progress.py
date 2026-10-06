@@ -126,7 +126,7 @@ def _qualifies(conn) -> List[str]:
     star = conn.execute(
         "SELECT i.topic_id FROM cards c JOIN images i ON i.id = c.image_id "
         "LEFT JOIN card_state s ON s.card_id = c.id "
-        "WHERE c.retired = 0 AND c.hidden = 0 AND i.present = 1 "
+        "WHERE c.retired = 0 AND c.hidden = 0 AND c.paused IS NULL AND i.present = 1 "
         "GROUP BY i.topic_id HAVING COUNT(*) >= 5 "
         "AND SUM(CASE WHEN s.reps >= 1 AND s.last_grade != 'again' THEN 1 ELSE 0 END) = COUNT(*) "
         "LIMIT 1"

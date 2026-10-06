@@ -28,12 +28,14 @@ class IgnoreTextDialog(QDialog):
             "flashcards. Your images are never changed.",
             "HeroText", wrap=True))
 
-        self.builtin = QCheckBox("Remove copyright lines and bare web addresses (recommended)")
+        self.builtin = QCheckBox("Remove slide footers and copyright notices (recommended)")
         self.builtin.setChecked(rules.builtin)
         self.builtin.toggled.connect(self._update_preview)
         layout.addWidget(self.builtin)
-        hint = label("Catches lines with ©, “Copyright” or “All rights reserved”, and lines that are "
-                     "only a link such as https://ProfessorMesser.com.", "Muted", wrap=True)
+        hint = label("Removes the Professor Messer footer (“https://ProfessorMesser.com © 2025 Messer "
+                     "Studios, LLC”) even when the text reader garbles it, plus copyright notices like "
+                     "“© 2024 …” or “All rights reserved”. Real content that just mentions copyright "
+                     "is kept.", "Muted", wrap=True)
         hint.setContentsMargins(30, 0, 0, 0)
         layout.addWidget(hint)
 
@@ -46,9 +48,16 @@ class IgnoreTextDialog(QDialog):
 
         self.preview = label("", "ProgressText", wrap=True)
         layout.addWidget(self.preview)
+        self.examples = label("", "Muted", wrap=True)
+        layout.addWidget(self.examples)
         layout.addStretch(1)
 
         buttons = QHBoxLayout()
+        self.undo_button = button("↩️  Undo last cleanup", "Plain")
+        self.undo_button.setToolTip("Put transcripts back the way they were before the last cleanup")
+        self.undo_button.clicked.connect(self.undo)
+        self.undo_button.setVisible(cleanup.last_cleanup_batch(conn) is not None)
+        buttons.addWidget(self.undo_button)
         buttons.addStretch(1)
         cancel = button("Cancel", "Plain")
         cancel.clicked.connect(self.reject)
@@ -64,12 +73,23 @@ class IgnoreTextDialog(QDialog):
         return cleanup.Rules(builtin=self.builtin.isChecked(), phrases=phrases)
 
     def _update_preview(self) -> None:
-        n = cleanup.count_affected(self.conn, self.rules())
-        if n:
-            self.preview.setText(f"✨ {n} transcript{'s' if n != 1 else ''} will be tidied up.")
+        changes = cleanup.preview_all(self.conn, self.rules())
+        if changes:
+            n = len(changes)
+            self.preview.setText(f"✨ {n} transcript{'s' if n != 1 else ''} will be tidied up. "
+                                 "A backup is kept so you can undo it.")
+            lines = []
+            for _, rel_path, removed in changes[:3]:
+                lines.append(f"• {rel_path.split('/', 1)[-1]}: removes “{removed[0].strip()}”")
+            self.examples.setText("\n".join(lines))
         else:
             self.preview.setText("No saved transcripts contain matching lines right now. "
                                  "New readings will be cleaned automatically.")
+            self.examples.setText("")
+
+    def undo(self) -> None:
+        self.changed_count = -cleanup.undo_last_cleanup(self.conn)
+        self.accept()
 
     def save(self) -> None:
         rules = self.rules()

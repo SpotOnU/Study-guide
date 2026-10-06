@@ -196,6 +196,17 @@ QFrame#FeedbackGood {{ background: {GREEN_SOFT}; border: 2px solid {GREEN}; bord
 QFrame#FeedbackTry {{ background: {PURPLE_SOFT}; border: 2px solid {PURPLE}; border-radius: 18px; }}
 QLabel#FeedbackTitle {{ font-size: 20px; font-weight: 900; }}
 QLabel#FeedbackSub {{ font-weight: 700; color: {INK}; }}
+QFrame#UpgradeBanner {{
+    background: {SUNNY_SOFT}; border: 2px solid {SUNNY}; border-radius: 24px;
+}}
+QLabel#Options {{ font-size: 18px; font-weight: 700; color: {INK}; }}
+QLabel#Explanation {{ font-size: 15px; color: {INK}; }}
+QLabel#WhyWrong {{ font-size: 14px; color: {MUTED}; }}
+QLabel#AddedContext {{
+    background: {SKY_SOFT}; color: {INK}; border-radius: 12px; padding: 8px 12px; font-size: 14px;
+}}
+QLabel#ContextTag {{ color: {SKY_DARK}; font-weight: 800; font-size: 13px; }}
+QLabel#PausedReason {{ color: {CORAL_DARK}; font-weight: 700; font-size: 13px; }}
 QLabel#MissedFront {{ font-size: 16px; font-weight: 700; }}
 QLabel#MissedAnswer {{ font-size: 17px; font-weight: 900; color: {GREEN_DARK}; }}
 

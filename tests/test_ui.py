@@ -7,6 +7,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+QtCore = pytest.importorskip("PySide6.QtCore")
 
 from studyguide import library, transcripts  # noqa: E402
 from studyguide.ocr import OCREngine  # noqa: E402
@@ -102,10 +103,8 @@ class SlideOCR(OCREngine):
     name = "fake"
 
     def recognize(self, path):
-        return (
-            "Mitochondria\n• Site of cellular respiration\n• Produce ATP from glucose and oxygen\n"
-            f"Osmosis: movement of water across a membrane ({path.stem})"
-        )
+        from conftest import MALWARE_SLIDE
+        return MALWARE_SLIDE
 
 
 def test_flashcard_round_in_the_window(qapp, conn, study_root):
@@ -127,6 +126,8 @@ def test_flashcard_round_in_the_window(qapp, conn, study_root):
     length = page.round.length
     page.reveal()
     assert page.answer_box.isVisibleTo(page)
+    assert page.card_explanation.text()  # every card explains its answer
+    assert page.card_context.text()      # and shows where it came from
     page.grade("again")  # missed: comes back at the end
     assert page.round.length == length + 1
     page.next_card()
@@ -156,12 +157,17 @@ def test_existing_transcripts_cleaned_once_on_upgrade(qapp, conn, study_root):
     lib = library.get_or_create_library(conn, study_root)
     library.scan_library(conn, lib)
     img = library.images_needing_ocr(conn, lib)[0]
-    footer = "https://ProfessorMesser.com © 2025 Messer Studios, LLC"
+    footer = "https //ProfessorMesser,com @ 2O25 Messer Studlos LLC"  # OCR-mangled
     transcripts.save_transcript(conn, img["id"], "Real content line\n" + footer)
     window = MainWindow(conn, None)
     assert transcripts.get_transcript(conn, img["id"])["text"] == "Real content line"
-    assert db.get_setting(conn, "cleanup_v1_applied") == "1"
+    assert db.get_setting(conn, "cleanup_v2_applied") == "1"
+    assert "footer" in window.statusBar().currentMessage()
     window.close()
+    # it runs only once...
+    transcripts.save_transcript(conn, img["id"], "Real content line\n" + footer)
+    MainWindow(conn, None).close()
+    assert footer in transcripts.get_transcript(conn, img["id"])["text"]
 
 
 def test_ignore_text_dialog(qapp, conn, study_root):
@@ -179,3 +185,36 @@ def test_ignore_text_dialog(qapp, conn, study_root):
     assert dialog.changed_count == 1
     assert transcripts.get_transcript(conn, img["id"])["text"] == "Keep me"
     assert cleanup.load_rules(conn).phrases == ["CompTIA A+ Core 1"]
+
+
+def test_old_cards_are_paused_and_upgrade_is_offered(qapp, conn, study_root):
+    from conftest import APP_SLIDE
+    from studyguide import flashcards
+    from studyguide.ui.upgrade_dialog import UpgradeDialog
+
+    window = MainWindow(conn, None)
+    window.open_folder(study_root)
+    lib = window.library_id
+    img = library.images_needing_ocr(conn, lib)[0]
+    transcripts.save_transcript(conn, img["id"], APP_SLIDE)
+    conn.execute(
+        "INSERT INTO cards (image_id, kind, front, back, context, fingerprint, generator, created_at) "
+        "VALUES (?, 'cloze', 'Fill in the blank:\nFind the _____ you need', 'application', "
+        "'Find the application you need', 'old', 'offline-basic', '2026-01-01')", (img["id"],))
+    conn.commit()
+
+    window.show_view("flashcards")
+    page = window.flashcards_page
+    banners = page.findChildren(QtWidgets.QFrame, "UpgradeBanner")
+    assert banners, "the home screen offers to regenerate old cards"
+
+    dialog = UpgradeDialog(conn, lib)
+    texts = " ".join(lbl.text() for lbl in dialog.findChildren(QtWidgets.QLabel))
+    assert "Find the _____ you need" in texts          # shows the paused card and why
+    assert "Which type of software lets a user perform a specific task" in texts  # and the new question
+    dialog.regenerate()
+    assert flashcards.old_cards_status(conn, lib).total == 0
+    page.show_home()
+    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)  # flush old widgets
+    assert not page.findChildren(QtWidgets.QFrame, "UpgradeBanner")
+    window.close()

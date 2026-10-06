@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import flashcards, library, progress
+from ..knowledge.core2 import SOURCE_LABEL
 from ..rounds import Feedback, Round, Summary
 from . import theme
 from .widgets import button, card, chip, clear_layout, label
@@ -114,6 +116,28 @@ class FlashcardsPage(QWidget):
                                         f"Best streak: {plural(best, 'day')}", theme.PURPLE))
         self.home_layout.addLayout(stats)
 
+        # ---- old fragment-based cards: paused, with an offer to regenerate
+        old = flashcards.old_cards_status(self.conn, lib)
+        if old.total:
+            banner, bl = card(name="UpgradeBanner")
+            row = QHBoxLayout()
+            words = QVBoxLayout()
+            words.addWidget(label("🛠️ Some older cards need an upgrade", "HeroTitle"))
+            example = ""
+            if old.examples:
+                e = old.examples[0]
+                example = f" Example: “{e['front'].rpartition(chr(10) * 2)[2]}” → “{e['back']}”."
+            words.addWidget(label(
+                f"{old.paused} of {old.total} older cards are paused because they copy slide fragments "
+                f"instead of testing a concept, and have no explanation.{example} "
+                "You can preview better questions made from the same slides.", "HeroText", wrap=True))
+            row.addLayout(words, 1)
+            go = button("👀  Preview & regenerate", "Purple")
+            go.clicked.connect(self.open_upgrade)
+            row.addWidget(go, 0, Qt.AlignVCenter)
+            bl.addLayout(row)
+            self.home_layout.addWidget(banner)
+
         # ---- today's round
         total_due = sum(r["due"] or 0 for r in overview)
         total_new = sum(r["new"] or 0 for r in overview)
@@ -173,6 +197,17 @@ class FlashcardsPage(QWidget):
             shelf.setColumnStretch(col, 1)
         self.home_layout.addLayout(shelf)
         self.home_layout.addStretch(1)
+
+    def open_upgrade(self) -> None:
+        from .upgrade_dialog import UpgradeDialog
+
+        lib = self.get_library_id()
+        if lib is None:
+            return
+        dialog = UpgradeDialog(self.conn, lib, self)
+        if dialog.exec():
+            self.refresh_home()
+            self.progress_changed.emit()
 
     def _stat_tile_layout(self, emoji: str, title: str, sub: str, color: str):
         frame, layout = card(name="Stat")
@@ -266,11 +301,24 @@ class FlashcardsPage(QWidget):
         head.addWidget(self.card_source, 1)
         head.addWidget(self.card_new)
         fl.addLayout(head)
+        # everything below the header scrolls, so long explanations always fit
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 0, 8, 0)
+        bl.setSpacing(12)
+        scroller = QScrollArea()
+        scroller.setWidgetResizable(True)
+        scroller.setWidget(body)
+        fl.addWidget(scroller, 1)
+
         self.card_heading = label("", "CardHeading", wrap=True)
-        fl.addWidget(self.card_heading)
+        bl.addWidget(self.card_heading)
         self.card_front = label("", "Front", wrap=True)
         self.card_front.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        fl.addWidget(self.card_front)
+        bl.addWidget(self.card_front)
+        self.card_options = label("", "Options", wrap=True)
+        self.card_options.setTextFormat(Qt.RichText)
+        bl.addWidget(self.card_options)
 
         self.answer_box = QWidget()
         al = QVBoxLayout(self.answer_box)
@@ -284,12 +332,24 @@ class FlashcardsPage(QWidget):
         self.card_answer = label("", "Answer", wrap=True)
         self.card_answer.setTextInteractionFlags(Qt.TextSelectableByMouse)
         al.addWidget(self.card_answer)
+
         src_row = QHBoxLayout()
         src_row.setSpacing(16)
         src_text = QVBoxLayout()
-        src_text.addWidget(label("FROM YOUR SLIDE", "Eyebrow"))
+        src_text.setSpacing(6)
+        self.why_title = label("WHY THIS IS RIGHT", "Eyebrow")
+        self.card_explanation = label("", "Explanation", wrap=True)
+        self.card_explanation.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.wrong_title = label("WHY NOT THE OTHERS", "Eyebrow")
+        self.card_why_wrong = label("", "WhyWrong", wrap=True)
+        self.card_why_wrong.setTextFormat(Qt.RichText)
+        self.added_box = label("", "AddedContext", wrap=True)
+        self.added_box.setTextFormat(Qt.RichText)
+        self.source_title = label("FROM YOUR SLIDE", "Eyebrow")
         self.card_context = label("", "Context", wrap=True)
-        src_text.addWidget(self.card_context)
+        for w in (self.why_title, self.card_explanation, self.wrong_title, self.card_why_wrong,
+                  self.added_box, self.source_title, self.card_context):
+            src_text.addWidget(w)
         self.hide_button = button("🙈  Hide this card", "Link")
         self.hide_button.setToolTip("Not a useful card? Hide it. Nothing is deleted.")
         self.hide_button.clicked.connect(self.hide_current)
@@ -301,8 +361,8 @@ class FlashcardsPage(QWidget):
         self.card_thumb.setAlignment(Qt.AlignCenter)
         src_row.addWidget(self.card_thumb, 0, Qt.AlignTop)
         al.addLayout(src_row)
-        fl.addWidget(self.answer_box)
-        fl.addStretch(1)
+        bl.addWidget(self.answer_box)
+        bl.addStretch(1)
         outer.addWidget(self.flash_frame, 1)
 
         # bottom area: reveal button / grade buttons / feedback bar
@@ -400,8 +460,7 @@ class FlashcardsPage(QWidget):
         self.card_heading.setText(heading)
         self.card_heading.setVisible(bool(heading))
         self.card_front.setText(prompt)
-        self.card_answer.setText(c["back"])
-        self.card_context.setText(f"“{c['context']}”")
+        self._fill_answer(c)
         pix = QPixmap(str(Path(c["root_path"]) / c["rel_path"]))
         self.card_thumb.setPixmap(pix.scaledToWidth(300, Qt.SmoothTransformation) if not pix.isNull() else QPixmap())
         self.card_thumb.setToolTip(c["rel_path"])
@@ -409,6 +468,44 @@ class FlashcardsPage(QWidget):
         self.bottom.setCurrentIndex(0)
         self._update_round_header()
         self.setFocus()
+
+    def _fill_answer(self, c) -> None:
+        """Answer, explanation, why the alternatives are wrong, and where it came from."""
+        d = flashcards.card_details(c)
+        options = d.get("options") or []
+        letters = "ABCDEFG"
+        self.card_options.setText("<br>".join(
+            f"<b>{letters[i]}.</b>&nbsp; {html.escape(o)}" for i, o in enumerate(options)))
+        self.card_options.setVisible(bool(options))
+        answer = c["back"]
+        if options and answer in options:
+            answer = f"{letters[options.index(answer)]}. {answer}"
+        self.card_answer.setText(answer)
+
+        self.card_explanation.setText(c["explanation"] or "")
+        for w in (self.why_title, self.card_explanation):
+            w.setVisible(bool(c["explanation"]))
+        wrong = d.get("why_wrong") or {}
+        self.card_why_wrong.setText("<br>".join(
+            f"<b>{html.escape(o)}:</b> {html.escape(why)}" for o, why in wrong.items()))
+        for w in (self.wrong_title, self.card_why_wrong):
+            w.setVisible(bool(wrong))
+
+        context_only = d.get("source") == "context"
+        added = d.get("added_context") or ""
+        prefix = SOURCE_LABEL + ": "
+        if context_only:
+            note = ("This question and its explanation come from general CompTIA A+ Core 2 knowledge. "
+                    "Your slide mentions the topic but doesn't explain it in this detail.")
+        elif added.startswith(prefix):
+            note = html.escape(added[len(prefix):])
+        else:
+            note = ""
+        self.added_box.setText(f"<b>🎓 Added CompTIA A+ Core 2 context (not from your slide)</b><br>{note}")
+        self.added_box.setVisible(bool(note))
+        self.source_title.setText("YOUR SLIDE MENTIONS IT HERE" if context_only else "FROM YOUR SLIDE")
+        self.card_context.setText(f"“{c['context']}”" if c["context"] else "")
+        self.source_title.setVisible(bool(c["context"]))
 
     def _update_round_header(self) -> None:
         r = self.round
@@ -528,7 +625,14 @@ class FlashcardsPage(QWidget):
                 fl.addLayout(head)
                 fl.addWidget(label(c["front"].split("\n\n", 1)[-1], "MissedFront", wrap=True))
                 fl.addWidget(label(f"✅  {c['back']}", "MissedAnswer", wrap=True))
-                fl.addWidget(label(f"From your slide: “{c['context']}”", "Context", wrap=True))
+                if c["explanation"]:
+                    fl.addWidget(label(c["explanation"], "Explanation", wrap=True))
+                d = flashcards.card_details(c)
+                where = "Your slide mentions it" if d.get("source") == "context" else "From your slide"
+                if d.get("source") == "context":
+                    fl.addWidget(label("🎓 Added CompTIA A+ Core 2 context (not from your slide)", "ContextTag"))
+                if c["context"]:
+                    fl.addWidget(label(f"{where}: “{c['context']}”", "Context", wrap=True))
                 self.summary_layout.addWidget(f)
 
         buttons = QHBoxLayout()

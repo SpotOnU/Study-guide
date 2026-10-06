@@ -68,3 +68,28 @@ def conn(tmp_path):
     connection = db.connect(tmp_path / "test.sqlite3")
     yield connection
     connection.close()
+
+
+FOOTER = "https://ProfessorMesser.com © 2025 Messer Studios, LLC"
+MANGLED_FOOTER = "https //ProfessorMesser,com @ 2O25 Messer Studlos LLC"
+
+# Realistic Core 2 style transcripts (written for the tests, not real course slides)
+APP_SLIDE = f"""Installing applications
+• Find the application you need
+• Download from the vendor or install from media
+• Check the system requirements first
+{FOOTER}"""
+
+MALWARE_SLIDE = f"""Malware
+• Ransomware: malware that encrypts your data and demands payment
+• Worm: malware that self-replicates across the network
+• Trojan horse: software that pretends to be something else
+• Keep anti-malware signatures updated
+{MANGLED_FOOTER}"""
+
+FS_SLIDE = f"""Windows file systems
+• NTFS - NT File System
+• FAT32 - File Allocation Table, 32-bit
+• exFAT: Extended File Allocation Table, designed for flash drives
+• EFS (Encrypting File System) protects individual files
+{FOOTER}"""

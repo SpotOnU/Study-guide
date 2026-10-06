@@ -11,6 +11,7 @@ choose one of three answers:
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import re
 import sqlite3
@@ -19,17 +20,26 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence
 
 from .db import iso, now_iso, parse_iso
-from .generators import Generator, SlideText, get_generator
+from .generators import GenerationResult, Generator, SlideText, StudyItem, get_generator
+from .generators.validate import legacy_card_problems
 
+CURRENT_VERSION = 2  # cards made before this are from the old fragment-based generator
 GRADES = ("again", "good", "easy")
 RETRY_DELAY = timedelta(minutes=10)
 START_EASE = 2.5
 MIN_EASE = 1.3
 
 
-def fingerprint(kind: str, back: str, context: str) -> str:
+def fingerprint(kind: str, concept: str, answer: str) -> str:
     norm = lambda s: re.sub(r"\s+", " ", s).strip().lower()  # noqa: E731
-    return hashlib.sha1(f"{kind}|{norm(back)}|{norm(context)}".encode()).hexdigest()
+    return hashlib.sha1(f"{kind}|{norm(concept)}|{norm(answer)}".encode()).hexdigest()
+
+
+def card_details(card: sqlite3.Row) -> Dict:
+    try:
+        return json.loads(card["details"] or "{}")
+    except (ValueError, TypeError):
+        return {}
 
 
 # --------------------------------------------------------------------------
@@ -42,47 +52,113 @@ class SyncResult:
     added: int = 0
     retired: int = 0
     restored: int = 0
+    paused: int = 0  # old cards newly paused because they failed quality checks
+    waiting: int = 0  # slides whose old cards are waiting for you to approve regenerating
 
 
-def sync_image(conn: sqlite3.Connection, image_id: int, generator: Generator) -> SyncResult:
-    row = conn.execute(
-        "SELECT i.id, i.rel_path, t.name AS topic, tr.text FROM images i "
-        "JOIN topics t ON t.id = i.topic_id "
-        "LEFT JOIN transcripts tr ON tr.image_id = i.id WHERE i.id = ?",
-        (image_id,),
-    ).fetchone()
-    drafts = generator.flashcards(
-        SlideText(row["id"], row["topic"], row["rel_path"], row["text"] or "")
+def _topic_slides(conn: sqlite3.Connection, library_id: int, topic_id: Optional[int] = None):
+    sql = (
+        "SELECT i.id, i.rel_path, i.topic_id, t.name AS topic, COALESCE(tr.text, '') AS text "
+        "FROM images i JOIN topics t ON t.id = i.topic_id "
+        "LEFT JOIN transcripts tr ON tr.image_id = i.id "
+        "WHERE i.library_id = ? AND i.present = 1 AND t.present = 1 "
     )
+    args: list = [library_id]
+    if topic_id is not None:
+        sql += "AND i.topic_id = ? "
+        args.append(topic_id)
+    topics: Dict[int, List[SlideText]] = {}
+    for r in conn.execute(sql + "ORDER BY i.rel_path COLLATE NOCASE", args):
+        topics.setdefault(r["topic_id"], []).append(SlideText(r["id"], r["topic"], r["rel_path"], r["text"]))
+    return topics
+
+
+def _images_with_old_cards(conn: sqlite3.Connection, library_id: int) -> set:
+    return {
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT c.image_id FROM cards c JOIN images i ON i.id = c.image_id "
+            "WHERE i.library_id = ? AND c.gen_version < ? AND c.retired = 0",
+            (library_id, CURRENT_VERSION),
+        )
+    }
+
+
+def check_old_cards(conn: sqlite3.Connection, library_id: int) -> int:
+    """Pause cards from the old generator that fail the quality checks, so they are
+    no longer presented as valid study material. Returns how many were newly paused."""
+    rows = conn.execute(
+        "SELECT c.id, c.front, c.back FROM cards c JOIN images i ON i.id = c.image_id "
+        "WHERE i.library_id = ? AND c.gen_version < ? AND c.retired = 0 AND c.paused IS NULL",
+        (library_id, CURRENT_VERSION),
+    ).fetchall()
+    paused = 0
+    with conn:
+        for r in rows:
+            problems = legacy_card_problems(r["front"], r["back"])
+            if problems:
+                conn.execute("UPDATE cards SET paused = ? WHERE id = ?", ("; ".join(problems), r["id"]))
+                paused += 1
+    return paused
+
+
+@dataclass
+class OldCardsStatus:
+    total: int  # old-generator cards still in your deck
+    paused: int  # of those, kept out of rounds because they failed checks
+    fragments: int  # paused for fragment/instruction wording like "Find the ___ you need"
+    examples: List[sqlite3.Row]
+
+
+def old_cards_status(conn: sqlite3.Connection, library_id: int) -> OldCardsStatus:
+    base = ("FROM cards c JOIN images i ON i.id = c.image_id "
+            "WHERE i.library_id = ? AND c.gen_version < ? AND c.retired = 0 ")
+    args = (library_id, CURRENT_VERSION)
+    total = conn.execute("SELECT COUNT(*) " + base, args).fetchone()[0]
+    paused = conn.execute("SELECT COUNT(*) " + base + "AND c.paused IS NOT NULL", args).fetchone()[0]
+    fragment_sql = "AND (c.paused LIKE '%fragment%' OR c.paused LIKE '%instruction%' OR c.paused LIKE '%vague%' OR c.paused LIKE '%footer%') "
+    fragments = conn.execute("SELECT COUNT(*) " + base + fragment_sql, args).fetchone()[0]
+    examples = conn.execute(
+        "SELECT c.*, i.rel_path " + base + "AND c.paused IS NOT NULL "
+        "ORDER BY (CASE WHEN c.paused LIKE '%fragment%' OR c.paused LIKE '%instruction%' THEN 0 ELSE 1 END), c.id "
+        "LIMIT 6", args,
+    ).fetchall()
+    return OldCardsStatus(total, paused, fragments, examples)
+
+
+def _store_items(conn: sqlite3.Connection, image_id: int, items: List[StudyItem], generator: Generator) -> SyncResult:
     existing = {
         r["fingerprint"]: r
-        for r in conn.execute("SELECT * FROM cards WHERE image_id = ?", (image_id,))
+        for r in conn.execute(
+            "SELECT * FROM cards WHERE image_id = ? AND gen_version >= ?", (image_id, CURRENT_VERSION)
+        )
     }
     result = SyncResult()
     keep = set()
     stamp = now_iso()
     with conn:
-        for position, draft in enumerate(drafts):
-            fp = fingerprint(draft.kind, draft.back, draft.context)
+        for position, item in enumerate(items):
+            fp = fingerprint(item.kind, item.concept, item.answer)
             if fp in keep:
                 continue
             keep.add(fp)
+            values = (item.kind, item.prompt, item.answer, item.slide_support, item.explanation,
+                      json.dumps(item.details()), position)
             old = existing.get(fp)
             if old is None:
                 conn.execute(
-                    "INSERT INTO cards (image_id, kind, front, back, context, fingerprint, "
-                    "generator, position, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (image_id, draft.kind, draft.front, draft.back, draft.context, fp,
-                     generator.name, position, stamp),
+                    "INSERT INTO cards (kind, front, back, context, explanation, details, position, "
+                    "image_id, fingerprint, generator, gen_version, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    values + (image_id, fp, generator.name, generator.version, stamp),
                 )
                 result.added += 1
             else:
                 if old["retired"]:
                     result.restored += 1
                 conn.execute(
-                    "UPDATE cards SET front = ?, back = ?, context = ?, position = ?, retired = 0 "
-                    "WHERE id = ?",
-                    (draft.front, draft.back, draft.context, position, old["id"]),
+                    "UPDATE cards SET kind = ?, front = ?, back = ?, context = ?, explanation = ?, "
+                    "details = ?, position = ?, retired = 0 WHERE id = ?",
+                    values + (old["id"],),
                 )
         for fp, old in existing.items():
             if fp not in keep and not old["retired"]:
@@ -97,20 +173,69 @@ def sync_cards(
     topic_id: Optional[int] = None,
     generator: Optional[Generator] = None,
 ) -> SyncResult:
-    """Create cards for new or changed transcripts. Never deletes cards or history."""
+    """Create study items for new or changed transcripts. Never deletes cards or history.
+
+    Slides that still have cards from the old generator are left alone until
+    you approve regenerating them (see ``regenerate_old_cards``); their
+    failing cards are paused in the meantime.
+    """
     generator = generator or get_generator()
-    sql = "SELECT id FROM images WHERE library_id = ? AND present = 1"
-    args: list = [library_id]
-    if topic_id is not None:
-        sql += " AND topic_id = ?"
-        args.append(topic_id)
-    total = SyncResult()
-    for row in conn.execute(sql, args).fetchall():
-        r = sync_image(conn, row["id"], generator)
-        total.added += r.added
-        total.retired += r.retired
-        total.restored += r.restored
+    total = SyncResult(paused=check_old_cards(conn, library_id))
+    waiting = _images_with_old_cards(conn, library_id)
+    for slides in _topic_slides(conn, library_id, topic_id).values():
+        ids = {s.image_id for s in slides}
+        targets = ids - waiting
+        total.waiting += len(ids & waiting)
+        if not targets:
+            continue
+        generated = generator.generate_topic(slides, only_ids=targets)
+        by_image: Dict[int, List[StudyItem]] = {}
+        for item in generated.items:
+            by_image.setdefault(item.image_id, []).append(item)
+        for image_id in targets:
+            r = _store_items(conn, image_id, by_image.get(image_id, []), generator)
+            total.added += r.added
+            total.retired += r.retired
+            total.restored += r.restored
     return total
+
+
+def preview_items(
+    conn: sqlite3.Connection,
+    library_id: int,
+    topic_id: Optional[int] = None,
+    generator: Optional[Generator] = None,
+    only_waiting: bool = False,
+) -> GenerationResult:
+    """Generate items without saving anything (for previews)."""
+    generator = generator or get_generator()
+    waiting = _images_with_old_cards(conn, library_id) if only_waiting else None
+    combined = GenerationResult()
+    for slides in _topic_slides(conn, library_id, topic_id).values():
+        only = {s.image_id for s in slides} & waiting if waiting is not None else None
+        if only is not None and not only:
+            continue
+        r = generator.generate_topic(slides, only_ids=only)
+        combined.items += r.items
+        combined.rejected += r.rejected
+        combined.skipped_slides += r.skipped_slides
+    return combined
+
+
+def regenerate_old_cards(conn: sqlite3.Connection, library_id: int, generator: Optional[Generator] = None) -> SyncResult:
+    """Replace old-generator cards with new study items made from the same slides.
+
+    Old cards are retired (hidden), not deleted, so their review history is kept.
+    """
+    with conn:
+        cur = conn.execute(
+            "UPDATE cards SET retired = 1 WHERE gen_version < ? AND retired = 0 AND image_id IN "
+            "(SELECT id FROM images WHERE library_id = ?)",
+            (CURRENT_VERSION, library_id),
+        )
+    result = sync_cards(conn, library_id, generator=generator)
+    result.retired += cur.rowcount
+    return result
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +245,7 @@ def sync_cards(
 ACTIVE = (
     "FROM cards c JOIN images i ON i.id = c.image_id JOIN topics t ON t.id = i.topic_id "
     "LEFT JOIN card_state s ON s.card_id = c.id "
-    "WHERE c.retired = 0 AND c.hidden = 0 AND i.present = 1 AND t.present = 1 "
+    "WHERE c.retired = 0 AND c.hidden = 0 AND c.paused IS NULL AND i.present = 1 AND t.present = 1 "
     "AND i.library_id = ? "
 )
 
