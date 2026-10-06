@@ -62,7 +62,8 @@ def test_full_flow(qapp, conn, study_root):
     image_id = item.data(0, IMAGE_ROLE)
     assert window.current_image_id == image_id
     assert window.editor.toPlainText().startswith("text of ")
-    assert "Topic:" in window.source_label.text()
+    assert window.topic_chip.text() == "Biology"
+    assert window.source_label.text() == item.toolTip(0).split("/", 1)[1]
     assert window.image_view._pixmap is not None
 
     # Edit, then switch slides: the edit is saved automatically
@@ -86,10 +87,12 @@ def test_full_flow(qapp, conn, study_root):
 
 def test_remembers_last_folder(qapp, conn, study_root):
     first = MainWindow(conn, None)
+    assert first.pages.currentIndex() == 0  # welcome screen
     first.open_folder(study_root)
+    assert first.pages.currentIndex() == 1
     first.close()
     second = MainWindow(conn, None)
     assert second.library_id == first.library_id
     assert len(list(image_items(second))) == 4
-    assert not second.ocr_action.isEnabled()  # no OCR engine available
+    assert not second.ocr_button.isEnabled()  # no OCR engine available
     second.close()

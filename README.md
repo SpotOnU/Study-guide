@@ -96,6 +96,8 @@ studyguide/
   transcripts.py  editable transcripts; protects manual edits
   ocr.py          Apple Vision text recognition (local)
   ui/             the desktop window (PySide6)
+    theme.py      colours, font and styling
+  assets/fonts/   Nunito font (SIL Open Font License, see OFL.txt)
 tests/            automated tests
 ```
 

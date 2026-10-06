@@ -7,18 +7,21 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QKeySequence, QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -27,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from .. import db, library, transcripts
 from ..ocr import OCREngine
+from . import theme
 
 IMAGE_ROLE = Qt.UserRole + 1
 
@@ -58,27 +62,50 @@ class OCRWorker(QObject):
         self.finished.emit()
 
 
+def card(title: Optional[str] = None) -> Tuple[QFrame, QVBoxLayout]:
+    """A white rounded panel, optionally with a bold title."""
+    frame = QFrame()
+    frame.setObjectName("Card")
+    layout = QVBoxLayout(frame)
+    layout.setContentsMargins(18, 16, 18, 18)
+    layout.setSpacing(10)
+    if title:
+        label = QLabel(title)
+        label.setObjectName("CardTitle")
+        layout.addWidget(label)
+    return frame, layout
+
+
+def button(text: str, style: str) -> QPushButton:
+    btn = QPushButton(text)
+    btn.setObjectName(style)
+    btn.setCursor(Qt.PointingHandCursor)
+    return btn
+
+
 class ImageView(QScrollArea):
     """Shows a slide scaled to the available width."""
+
+    PLACEHOLDER = "👈  Pick a slide to start"
 
     def __init__(self) -> None:
         super().__init__()
         self.setWidgetResizable(True)
-        self.label = QLabel("Choose a slide on the left.")
+        self.label = QLabel(self.PLACEHOLDER)
+        self.label.setObjectName("Placeholder")
         self.label.setAlignment(Qt.AlignCenter)
         self.setWidget(self.label)
         self._pixmap: Optional[QPixmap] = None
 
     def show_image(self, path: Optional[Path]) -> None:
         self._pixmap = None
+        self.label.setPixmap(QPixmap())
         if path is None:
-            self.label.setPixmap(QPixmap())
-            self.label.setText("Choose a slide on the left.")
+            self.label.setText(self.PLACEHOLDER)
             return
         pixmap = QPixmap(str(path))  # read-only load
         if pixmap.isNull():
-            self.label.setPixmap(QPixmap())
-            self.label.setText(f"Could not open {path.name}")
+            self.label.setText(f"😕  Couldn't open {path.name}")
             return
         self._pixmap = pixmap
         self._rescale()
@@ -103,11 +130,12 @@ class MainWindow(QMainWindow):
         self.ocr_engine = ocr_engine
         self.library_id: Optional[int] = None
         self.current_image_id: Optional[int] = None
+        self._topic_colors: dict = {}
         self._ocr_thread: Optional[QThread] = None
         self._ocr_worker: Optional[OCRWorker] = None
 
         self.setWindowTitle("Study Guide")
-        self.resize(1300, 820)
+        self.resize(1320, 840)
         self._build_ui()
 
         saved = db.get_setting(conn, "current_library_id")
@@ -118,80 +146,162 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
-        toolbar = self.addToolBar("Library")
-        toolbar.setMovable(False)
-        self.choose_action = QAction("Choose Study Folder…", self)
-        self.choose_action.triggered.connect(self.choose_folder)
-        self.refresh_action = QAction("Refresh Library", self)
-        self.refresh_action.setShortcut(QKeySequence.Refresh)
-        self.refresh_action.triggered.connect(self.refresh_library)
-        self.ocr_action = QAction("Read Text from New Slides", self)
-        self.ocr_action.triggered.connect(self.transcribe_pending)
-        for action in (self.choose_action, self.refresh_action, self.ocr_action):
-            toolbar.addAction(action)
+        root = QWidget()
+        root.setObjectName("Root")
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(20, 16, 20, 12)
+        outer.setSpacing(14)
 
+        # Header: title + action buttons
+        header = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        title = QLabel("📚 Study Guide")
+        title.setObjectName("AppTitle")
+        self.tagline = QLabel("Let's turn your slides into something fun to learn!")
+        self.tagline.setObjectName("Tagline")
+        titles.addWidget(title)
+        titles.addWidget(self.tagline)
+        header.addLayout(titles)
+        header.addStretch(1)
+
+        self.choose_button = button("📁  Choose Folder", "Plain")
+        self.choose_button.clicked.connect(self.choose_folder)
+        self.refresh_button = button("🔄  Refresh", "Sky")
+        self.refresh_button.setShortcut(QKeySequence.Refresh)
+        self.refresh_button.setToolTip("Look for new slides (⌘R)")
+        self.refresh_button.clicked.connect(self.refresh_library)
+        self.ocr_button = button("✨  Read New Slides", "Primary")
+        self.ocr_button.setToolTip("Read the text on every slide that doesn't have any yet")
+        self.ocr_button.clicked.connect(self.transcribe_pending)
+        for btn in (self.choose_button, self.refresh_button, self.ocr_button):
+            header.addWidget(btn)
+        outer.addLayout(header)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self._build_welcome())
+        self.pages.addWidget(self._build_library_page())
+        outer.addWidget(self.pages, 1)
+        self.setCentralWidget(root)
+
+        if self.ocr_engine is None:
+            self.statusBar().showMessage(
+                "ℹ️  Automatic text reading needs macOS. You can still type transcripts by hand."
+            )
+
+    def _build_welcome(self) -> QWidget:
+        frame, layout = card()
+        layout.addStretch(1)
+        for text, name in (
+            ("📚✨", "WelcomeEmoji"),
+            ("Welcome to Study Guide!", "WelcomeTitle"),
+            (
+                "Pick the folder where you keep your slide screenshots.\n"
+                "Each subfolder becomes a topic. Your images are only read, never changed.",
+                "WelcomeText",
+            ),
+        ):
+            label = QLabel(text)
+            label.setObjectName(name)
+            label.setAlignment(Qt.AlignCenter)
+            layout.addWidget(label)
+        start = button("📁  Choose my study folder", "Big")
+        start.clicked.connect(self.choose_folder)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        row.addWidget(start)
+        row.addStretch(1)
+        layout.addSpacing(10)
+        layout.addLayout(row)
+        layout.addStretch(2)
+        return frame
+
+    def _build_library_page(self) -> QWidget:
+        # Left: progress + topics
+        left, left_layout = card("Your Topics")
+        self.progress_text = QLabel()
+        self.progress_text.setObjectName("ProgressText")
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(18)
         self.folder_label = QLabel()
-        self.folder_label.setContentsMargins(12, 0, 0, 0)
-        toolbar.addWidget(self.folder_label)
-
+        self.folder_label.setObjectName("FolderPath")
+        self.folder_label.setWordWrap(True)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Topics and slides"])
+        self.tree.setHeaderHidden(True)
+        self.tree.setIndentation(18)
         self.tree.currentItemChanged.connect(self._on_selection_changed)
+        left_layout.addWidget(self.progress_text)
+        left_layout.addWidget(self.progress_bar)
+        left_layout.addSpacing(4)
+        left_layout.addWidget(self.tree, 1)
+        left_layout.addWidget(self.folder_label)
 
+        # Middle: the slide
+        middle, middle_layout = card("🖼️  Slide")
         self.image_view = ImageView()
+        middle_layout.addWidget(self.image_view, 1)
 
+        # Right: transcript
+        right, right_layout = card("📝  Transcript")
+        chip_row = QHBoxLayout()
+        self.topic_chip = QLabel()
+        self.topic_chip.setObjectName("Chip")
+        self.topic_chip.hide()
+        chip_row.addWidget(self.topic_chip)
+        chip_row.addStretch(1)
         self.source_label = QLabel("No slide selected")
+        self.source_label.setObjectName("SlideName")
         self.source_label.setWordWrap(True)
         self.source_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.status_label = QLabel()
-        self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setObjectName("StatusPill")
+        self.status_label.setWordWrap(True)
+        self.status_label.hide()
         self.editor = QPlainTextEdit()
         self.editor.setPlaceholderText(
-            "Transcript of this slide. Fix any mistakes here; your edits are kept."
+            "The text from this slide shows up here. Fix any mistakes. Your edits are kept!"
         )
         self.editor.modificationChanged.connect(lambda _: self._update_enabled())
 
-        self.save_button = QPushButton("Save")
+        self.save_button = button("💾  Save", "Primary")
         self.save_button.setShortcut(QKeySequence.Save)
         self.save_button.clicked.connect(self.save_current)
-        self.revert_button = QPushButton("Undo Unsaved Changes")
+        self.revert_button = button("↩️  Undo", "Plain")
+        self.revert_button.setToolTip("Throw away changes you haven't saved")
         self.revert_button.clicked.connect(self._load_transcript)
-        self.reread_button = QPushButton("Re-read Text from Image")
+        self.reread_button = button("🔍  Re-read", "Purple")
+        self.reread_button.setToolTip("Read the text from this slide's image again")
         self.reread_button.clicked.connect(self.reread_current)
-
         buttons = QHBoxLayout()
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.revert_button)
         buttons.addStretch(1)
         buttons.addWidget(self.reread_button)
 
-        right = QWidget()
-        right_layout = QVBoxLayout(right)
+        right_layout.addLayout(chip_row)
         right_layout.addWidget(self.source_label)
         right_layout.addWidget(self.status_label)
         right_layout.addWidget(self.editor, 1)
         right_layout.addLayout(buttons)
 
         splitter = QSplitter()
-        splitter.addWidget(self.tree)
-        splitter.addWidget(self.image_view)
-        splitter.addWidget(right)
-        splitter.setSizes([260, 620, 420])
-        self.setCentralWidget(splitter)
-
-        if self.ocr_engine is None:
-            self.statusBar().showMessage(
-                "Automatic text reading is unavailable (needs macOS). "
-                "You can still type transcripts by hand."
-            )
+        splitter.setChildrenCollapsible(False)
+        for widget in (left, middle, right):
+            splitter.addWidget(widget)
+        splitter.setSizes([300, 580, 440])
+        return splitter
 
     def _update_enabled(self) -> None:
         has_library = self.library_id is not None
         has_image = self.current_image_id is not None
         busy = self._ocr_thread is not None
-        self.refresh_action.setEnabled(has_library and not busy)
-        self.ocr_action.setEnabled(has_library and self.ocr_engine is not None and not busy)
-        self.choose_action.setEnabled(not busy)
+        self.pages.setCurrentIndex(1 if has_library else 0)
+        self.refresh_button.setVisible(has_library)
+        self.ocr_button.setVisible(has_library)
+        self.refresh_button.setEnabled(not busy)
+        self.ocr_button.setEnabled(self.ocr_engine is not None and not busy)
+        self.choose_button.setEnabled(not busy)
         self.editor.setEnabled(has_image)
         modified = has_image and self.editor.document().isModified()
         self.save_button.setEnabled(modified)
@@ -216,44 +326,57 @@ class MainWindow(QMainWindow):
             return
         self._autosave()
         root = library.library_root(self.conn, self.library_id)
-        self.folder_label.setText(str(root))
+        self.folder_label.setText(f"📂 {root}")
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             result = library.scan_library(self.conn, self.library_id)
         except FileNotFoundError as exc:
             QApplication.restoreOverrideCursor()
-            self.statusBar().showMessage(str(exc))
+            self.statusBar().showMessage(f"😕  {exc}")
             QMessageBox.warning(
                 self,
                 "Study folder not found",
-                f"{exc}\n\nIf it moved, use “Choose Study Folder…” to pick it again. "
+                f"{exc}\n\nIf it moved, use “Choose Folder” to pick it again. "
                 "Your transcripts are still saved.",
             )
             self._populate_tree()
+            self._update_enabled()
             return
         QApplication.restoreOverrideCursor()
         self._populate_tree()
-        self.statusBar().showMessage(result.summary())
+        prefix = "🎉  " if result.added or result.restored else "✅  "
+        self.statusBar().showMessage(prefix + result.summary())
         self._update_enabled()
 
     def _populate_tree(self) -> None:
         selected = self.current_image_id
         self.tree.blockSignals(True)
         self.tree.clear()
+        self._topic_colors = {}
         select_item = None
-        for topic in library.list_topics(self.conn, self.library_id):
+        total = done_total = 0
+        topic_font = self.tree.font()
+        topic_font.setBold(True)
+        for index, topic in enumerate(library.list_topics(self.conn, self.library_id)):
+            color = theme.topic_color(index)
+            self._topic_colors[topic["name"]] = color
             count = topic["image_count"] or 0
             done = topic["transcribed_count"] or 0
-            topic_item = QTreeWidgetItem([f"{topic['name']}  ({done}/{count} transcribed)"])
+            total += count
+            done_total += done
+            label = f"{topic['name']}   {done}/{count}" + ("  ⭐" if count and done == count else "")
+            topic_item = QTreeWidgetItem([label])
+            topic_item.setIcon(0, theme.topic_icon(color, topic["name"]))
+            topic_item.setFont(0, topic_font)
             topic_item.setFlags(topic_item.flags() & ~Qt.ItemIsSelectable)
             self.tree.addTopLevelItem(topic_item)
             for img in library.list_images(self.conn, topic["id"]):
                 name = img["rel_path"].split("/", 1)[1]
                 if img["transcript"]:
                     stale = img["ocr_sha256"] and img["ocr_sha256"] != img["sha256"]
-                    marker = "⚠" if stale else ("✎" if img["edited"] else "✓")
+                    marker = "⚠️" if stale else ("✏️" if img["edited"] else "✅")
                 else:
-                    marker = "○"
+                    marker = "⚪"
                 item = QTreeWidgetItem([f"{marker}  {name}"])
                 item.setData(0, IMAGE_ROLE, img["id"])
                 item.setToolTip(0, img["rel_path"])
@@ -262,6 +385,16 @@ class MainWindow(QMainWindow):
                     select_item = item
             topic_item.setExpanded(True)
         self.tree.blockSignals(False)
+
+        self.progress_bar.setMaximum(max(total, 1))
+        self.progress_bar.setValue(done_total)
+        if total == 0:
+            self.progress_text.setText("No slides found yet")
+        elif done_total == total:
+            self.progress_text.setText(f"🌟 All {total} slides ready!")
+        else:
+            self.progress_text.setText(f"{done_total} of {total} slides ready")
+
         if select_item is not None:
             self.tree.setCurrentItem(select_item)
         else:
@@ -280,8 +413,9 @@ class MainWindow(QMainWindow):
     def _show_current(self) -> None:
         if self.current_image_id is None:
             self.image_view.show_image(None)
+            self.topic_chip.hide()
             self.source_label.setText("No slide selected")
-            self.status_label.clear()
+            self.status_label.hide()
             self.editor.clear()
             self.editor.document().setModified(False)
             self._update_enabled()
@@ -289,8 +423,20 @@ class MainWindow(QMainWindow):
         row = library.get_image(self.conn, self.current_image_id)
         path = Path(row["root_path"]) / row["rel_path"]
         self.image_view.show_image(path)
-        self.source_label.setText(f"<b>Topic:</b> {row['topic_name']}<br><b>Slide:</b> {row['rel_path']}")
+        color = self._topic_colors.get(row["topic_name"], theme.PURPLE)
+        self.topic_chip.setText(row["topic_name"])
+        self.topic_chip.setStyleSheet(f"background: {color};")
+        self.topic_chip.setToolTip(f"Topic: {row['topic_name']}")
+        self.topic_chip.show()
+        self.source_label.setText(row["rel_path"].split("/", 1)[1])
+        self.source_label.setToolTip(f"From {row['rel_path']}")
         self._load_transcript()
+
+    def _set_status(self, kind: str, text: str) -> None:
+        bg, fg = theme.STATUS_STYLES[kind]
+        self.status_label.setStyleSheet(f"background: {bg}; color: {fg};")
+        self.status_label.setText(text)
+        self.status_label.show()
 
     def _load_transcript(self) -> None:
         if self.current_image_id is None:
@@ -300,14 +446,13 @@ class MainWindow(QMainWindow):
         self.editor.setPlainText(tr["text"] if tr else "")
         self.editor.document().setModified(False)
         if tr is None:
-            status = "Not transcribed yet."
+            self._set_status("none", "⚪  No text yet. Click “Read New Slides” or type it in.")
         elif tr["ocr_sha256"] and tr["ocr_sha256"] != row["sha256"]:
-            status = "⚠ The image file changed since its text was read. Consider re-reading it."
+            self._set_status("stale", "⚠️  This image changed since its text was read. Try “Re-read”.")
         elif tr["edited"]:
-            status = f"✎ Edited by you · last saved {tr['updated_at']}"
+            self._set_status("edited", "✏️  Edited by you. Nice work keeping it accurate!")
         else:
-            status = f"✓ Read automatically ({tr['ocr_engine']}). Please check for mistakes."
-        self.status_label.setText(status)
+            self._set_status("ocr", "✅  Read automatically. Give it a quick check for typos.")
         self._update_enabled()
 
     def save_current(self) -> None:
@@ -316,7 +461,7 @@ class MainWindow(QMainWindow):
         transcripts.save_transcript(self.conn, self.current_image_id, self.editor.toPlainText())
         self._load_transcript()
         self._populate_tree()
-        self.statusBar().showMessage("Transcript saved.", 3000)
+        self.statusBar().showMessage("💾  Saved! Your fix is kept safe.", 3000)
 
     def _autosave(self) -> None:
         if self.current_image_id is not None and self.editor.document().isModified():
@@ -336,7 +481,7 @@ class MainWindow(QMainWindow):
             for r in library.images_needing_ocr(self.conn, self.library_id)
         ]
         if not jobs:
-            self.statusBar().showMessage("All slides already have text. Nothing new to read.")
+            self.statusBar().showMessage("🌟  Every slide already has text. You're all set!")
             return
         self._start_ocr(jobs, replace_edits=False)
 
@@ -368,7 +513,7 @@ class MainWindow(QMainWindow):
         self._ocr_worker.result.connect(self._on_ocr_result)
         self._ocr_worker.failed.connect(self._on_ocr_failed)
         self._ocr_worker.progress.connect(
-            lambda done, total: self.statusBar().showMessage(f"Reading slides… {done}/{total}")
+            lambda done, total: self.statusBar().showMessage(f"🔍  Reading slides… {done}/{total}")
         )
         self._ocr_worker.finished.connect(self._on_ocr_finished)
         self._update_enabled()
@@ -391,10 +536,14 @@ class MainWindow(QMainWindow):
         self._ocr_worker = None
         self._populate_tree()
         if self._ocr_failures:
-            self.statusBar().showMessage(f"Done, but {len(self._ocr_failures)} slide(s) could not be read.")
-            QMessageBox.warning(self, "Some slides could not be read", "\n".join(self._ocr_failures[:10]))
+            self.statusBar().showMessage(
+                f"😕  Done, but {len(self._ocr_failures)} slide(s) couldn't be read."
+            )
+            QMessageBox.warning(
+                self, "Some slides couldn't be read", "\n".join(self._ocr_failures[:10])
+            )
         else:
-            self.statusBar().showMessage("Finished reading slides. Check the transcripts for mistakes.")
+            self.statusBar().showMessage("🎉  All done! Check the transcripts for any typos.")
         self._update_enabled()
 
     # ---------------------------------------------------------------- close
