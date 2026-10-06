@@ -115,6 +115,21 @@ When you edit a transcript, the matching cards update the next time you open
 Flashcards. Cards for lines you removed are retired but keep their review
 history. If a line comes back, its card returns with its history.
 
+### Removing repeated clutter (footers, links)
+
+Slide footers like `https://ProfessorMesser.com © 2025 Messer Studios, LLC` are
+removed from transcripts automatically. That way they don't clutter your notes
+or turn into flashcards. By default the app drops:
+
+- any line with a copyright notice (©, "Copyright", "All rights reserved")
+- any line that is only a web address
+
+Click **🧹 Ignore Text** in the Library to switch this off, or to add your own
+phrases. Any line containing one of your phrases is removed, for example a
+course name repeated on every slide. Saving cleans your existing transcripts
+straight away. Only whole matching lines are removed, and the raw text reading
+is kept in the database. Cards made from removed lines are retired.
+
 PNGs placed directly in the main folder (not in a topic subfolder) are
 skipped. Hidden files and folders (names starting with `.`) are ignored.
 
@@ -150,6 +165,7 @@ studyguide/
   db.py           SQLite schema and migrations
   library.py      scanning the study folder (read-only)
   transcripts.py  editable transcripts; protects manual edits
+  cleanup.py      removes repeated footers/links from transcripts
   ocr.py          Apple Vision text recognition (local)
   generators/     turns slide text into study material (swappable)
   flashcards.py   cards, review schedule, picking rounds

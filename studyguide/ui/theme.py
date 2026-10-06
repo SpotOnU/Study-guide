@@ -240,6 +240,8 @@ QStatusBar {{
 }}
 QToolTip {{ background: {INK}; color: white; border: none; padding: 6px; border-radius: 6px; }}
 QMessageBox {{ background: {CARD}; }}
+QDialog {{ background: {CREAM}; }}
+QCheckBox {{ font-weight: 700; spacing: 10px; }}
 """
 
 # Visual styles for the transcript status pill: (background, text colour)

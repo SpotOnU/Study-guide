@@ -29,10 +29,11 @@ from PySide6.QtWidgets import (
 )
 
 from .. import db, library, transcripts
-from .. import progress
+from .. import cleanup, progress
 from ..ocr import OCREngine
 from . import theme
 from .flashcards_page import FlashcardsPage
+from .ignore_dialog import IgnoreTextDialog
 from .widgets import button, card
 
 IMAGE_ROLE = Qt.UserRole + 1
@@ -121,6 +122,11 @@ class MainWindow(QMainWindow):
         self.resize(1320, 840)
         self._build_ui()
 
+        # One-time tidy-up of transcripts saved before clutter removal existed
+        if db.get_setting(conn, "cleanup_v1_applied") is None:
+            cleanup.clean_all(conn, cleanup.load_rules(conn))
+            db.set_setting(conn, "cleanup_v1_applied", "1")
+
         saved = db.get_setting(conn, "current_library_id")
         if saved:
             self.library_id = int(saved)
@@ -178,7 +184,10 @@ class MainWindow(QMainWindow):
         self.ocr_button = button("✨  Read New Slides", "Primary")
         self.ocr_button.setToolTip("Read the text on every slide that doesn't have any yet")
         self.ocr_button.clicked.connect(self.transcribe_pending)
-        for btn in (self.choose_button, self.refresh_button, self.ocr_button):
+        self.ignore_button = button("🧹  Ignore Text", "Plain")
+        self.ignore_button.setToolTip("Remove repeated lines like copyright footers from transcripts")
+        self.ignore_button.clicked.connect(self.edit_ignore_rules)
+        for btn in (self.choose_button, self.ignore_button, self.refresh_button, self.ocr_button):
             header.addWidget(btn)
         outer.addLayout(header)
 
@@ -315,6 +324,8 @@ class MainWindow(QMainWindow):
         self.xp_stat.setVisible(has_library)
         self.refresh_button.setVisible(in_library)
         self.ocr_button.setVisible(in_library)
+        self.ignore_button.setVisible(in_library)
+        self.ignore_button.setEnabled(not busy)
         self.choose_button.setVisible(in_library or not has_library)
         self.refresh_button.setEnabled(not busy)
         self.ocr_button.setEnabled(self.ocr_engine is not None and not busy)
@@ -360,6 +371,19 @@ class MainWindow(QMainWindow):
         self.current_image_id = None
         self.refresh_library()
         self.show_view("library")
+
+    def edit_ignore_rules(self) -> None:
+        self._autosave()
+        dialog = IgnoreTextDialog(self.conn, self)
+        if dialog.exec():
+            n = dialog.changed_count
+            self._populate_tree()
+            if self.current_image_id is not None:
+                self._load_transcript()
+            self.statusBar().showMessage(
+                f"🧹  Tidied up {n} transcript{'s' if n != 1 else ''}." if n
+                else "🧹  Saved. New readings will skip those lines."
+            )
 
     def refresh_library(self) -> None:
         if self.library_id is None:

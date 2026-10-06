@@ -13,6 +13,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Optional
 
+from . import cleanup
 from .db import now_iso
 
 
@@ -42,7 +43,10 @@ def apply_ocr(
     """Store an OCR result. Returns True if the visible text was replaced.
 
     Hand-edited transcripts are kept unless ``replace_edits`` is True.
+    Clutter such as copyright footers is removed from the visible text
+    (see cleanup.py); ``ocr_text`` keeps the raw reading.
     """
+    text, _ = cleanup.clean_text(ocr_text, cleanup.load_rules(conn))
     existing = get_transcript(conn, image_id)
     stamp = now_iso()
     with conn:
@@ -50,7 +54,7 @@ def apply_ocr(
             conn.execute(
                 "INSERT INTO transcripts (image_id, text, ocr_text, ocr_engine, ocr_sha256, "
                 "edited, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?)",
-                (image_id, ocr_text, ocr_text, engine, image_sha256, stamp),
+                (image_id, text, ocr_text, engine, image_sha256, stamp),
             )
             return True
         if existing["edited"] and not replace_edits:
@@ -63,6 +67,6 @@ def apply_ocr(
         conn.execute(
             "UPDATE transcripts SET text = ?, ocr_text = ?, ocr_engine = ?, ocr_sha256 = ?, "
             "edited = 0, updated_at = ? WHERE image_id = ?",
-            (ocr_text, ocr_text, engine, image_sha256, stamp, image_id),
+            (text, ocr_text, engine, image_sha256, stamp, image_id),
         )
         return True

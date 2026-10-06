@@ -148,3 +148,34 @@ def test_flashcard_round_in_the_window(qapp, conn, study_root):
     assert window.pages.currentIndex() == 1
     window.close()
     assert snapshot(study_root) == before
+
+
+def test_existing_transcripts_cleaned_once_on_upgrade(qapp, conn, study_root):
+    from studyguide import db
+
+    lib = library.get_or_create_library(conn, study_root)
+    library.scan_library(conn, lib)
+    img = library.images_needing_ocr(conn, lib)[0]
+    footer = "https://ProfessorMesser.com © 2025 Messer Studios, LLC"
+    transcripts.save_transcript(conn, img["id"], "Real content line\n" + footer)
+    window = MainWindow(conn, None)
+    assert transcripts.get_transcript(conn, img["id"])["text"] == "Real content line"
+    assert db.get_setting(conn, "cleanup_v1_applied") == "1"
+    window.close()
+
+
+def test_ignore_text_dialog(qapp, conn, study_root):
+    from studyguide import cleanup
+    from studyguide.ui.ignore_dialog import IgnoreTextDialog
+
+    lib = library.get_or_create_library(conn, study_root)
+    library.scan_library(conn, lib)
+    img = library.images_needing_ocr(conn, lib)[0]
+    transcripts.save_transcript(conn, img["id"], "Keep me\nCompTIA A+ Core 1 - Domain 2")
+    dialog = IgnoreTextDialog(conn)
+    dialog.phrases.setPlainText("CompTIA A+ Core 1")
+    assert "1 transcript" in dialog.preview.text()
+    dialog.save()
+    assert dialog.changed_count == 1
+    assert transcripts.get_transcript(conn, img["id"])["text"] == "Keep me"
+    assert cleanup.load_rules(conn).phrases == ["CompTIA A+ Core 1"]
